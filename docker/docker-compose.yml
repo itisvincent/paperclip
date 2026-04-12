@@ -10,8 +10,6 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -23,17 +21,30 @@ services:
       - "3100:3100"
     environment:
       DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      HOST: "0.0.0.0"
       PORT: "3100"
       SERVE_UI: "true"
+
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
-      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:?set your real https URL}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+
+      # Keep all Claude Code auth/config inside persistent volume
+      PAPERCLIP_HOME: "/paperclip"
+      HOME: "/paperclip"
+      XDG_CONFIG_HOME: "/paperclip/.config"
+      XDG_DATA_HOME: "/paperclip/.local/share"
+
+      # Optional but recommended for server stability (avoid OAuth relogin)
+      # ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+
     volumes:
       - paperclip-data:/paperclip
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:
