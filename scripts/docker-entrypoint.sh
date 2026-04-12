@@ -26,4 +26,10 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Ensure persistent runtime/config directories exist and remain writable.
+# This avoids EACCES on startup and lets embedded CLIs persist auth state.
+mkdir -p /paperclip /paperclip/.config /paperclip/.local/share
+chown -R node:node /paperclip
+chmod -R u+rwX /paperclip
+
 exec gosu node "$@"

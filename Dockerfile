@@ -64,6 +64,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
+  XDG_CONFIG_HOME=/paperclip/.config \
+  XDG_DATA_HOME=/paperclip/.local/share \
   HOST=0.0.0.0 \
   PORT=3100 \
   SERVE_UI=true \
