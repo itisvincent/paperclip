@@ -1,0 +1,23 @@
+{
+  "name": "reclaude-paperclip-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Paperclip external adapter that runs the `reclaude` CLI — a drop-in replacement for Claude Code (`claude`). Self-contained: depends only on Node built-ins.",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./ui-parser": "./ui-parser.js"
+  },
+  "paperclip": {
+    "adapterUiParser": "1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "index.js",
+    "ui-parser.js",
+    "README.md"
+  ]
+}

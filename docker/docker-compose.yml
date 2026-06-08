@@ -41,6 +41,9 @@ services:
 
     volumes:
       - paperclip-data:/paperclip
+      # External reclaude adapter — install via Settings → Adapters → Local path
+      # using the container path /opt/reclaude-adapter
+      - ../external-adapters/reclaude-adapter:/opt/reclaude-adapter:ro
     depends_on:
       db:
         condition: service_healthy
