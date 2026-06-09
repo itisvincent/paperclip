@@ -329,7 +329,9 @@ function probeCommand(command, cwd) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, ["--version"], {
+      // reclaude's version subcommand is `version` (NOT `--version`, which syncs
+      // config and launches Claude — slow, and not a clean liveness check).
+      child = spawn(command, ["version"], {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         shell: process.platform === "win32",
@@ -352,7 +354,7 @@ function probeCommand(command, cwd) {
         // ignore
       }
       done({ ok: false, error: "version probe timed out" });
-    }, 5000);
+    }, 10000);
     child.stdout.on("data", (c) => {
       out += c.toString();
     });
