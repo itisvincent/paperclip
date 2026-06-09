@@ -16,6 +16,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 const TYPE = "reclaude_local";
@@ -49,6 +50,32 @@ const MAX_TURNS_SUBTYPES = new Set([
   "turn_limit",
   "turn_limit_exhausted",
 ]);
+
+/**
+ * Resolve the reclaude binary when the agent config leaves the command unset
+ * (or at the bare "reclaude" default).
+ *
+ * reclaude installs to $HOME/.local/bin, which is usually NOT on the server
+ * process PATH, and a /usr/local/bin symlink does not survive container
+ * recreation (it lives in the image layer, not the volume). Preferring the
+ * absolute, volume-backed install path keeps the adapter working across
+ * redeploys with zero per-agent configuration. Falls back to bare "reclaude"
+ * (PATH resolution) when no install is found. Override with RECLAUDE_BIN.
+ */
+function resolveDefaultCommand() {
+  const candidates = [];
+  if (process.env.RECLAUDE_BIN) candidates.push(process.env.RECLAUDE_BIN);
+  if (process.env.HOME) candidates.push(`${process.env.HOME}/.local/bin/reclaude`);
+  candidates.push("/paperclip/.local/bin/reclaude");
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      // ignore and try the next candidate
+    }
+  }
+  return DEFAULT_COMMAND;
+}
 
 // ---------------------------------------------------------------------------
 // Safe value extraction helpers (untrusted config + agent output)
@@ -375,8 +402,14 @@ function probeCommand(command, cwd) {
 
 function readConfig(rawConfig) {
   const config = parseObject(rawConfig);
+  // An explicit non-default command (e.g. an absolute path) is always respected.
+  // Unset or the bare "reclaude" default triggers auto-resolution to the
+  // volume-backed install path so agents survive container recreation.
+  const rawCommand = asString(config.command, "").trim();
+  const command =
+    rawCommand && rawCommand !== DEFAULT_COMMAND ? rawCommand : resolveDefaultCommand();
   return {
-    command: asString(config.command, DEFAULT_COMMAND).trim() || DEFAULT_COMMAND,
+    command,
     model: asString(config.model, "").trim(),
     // schema form may store reasoning effort under `effort` or `thinkingEffort`
     effort: (asString(config.effort, "") || asString(config.thinkingEffort, "")).trim(),
@@ -728,8 +761,8 @@ function getConfigSchema() {
         key: "command",
         label: "CLI binary",
         type: "text",
-        default: DEFAULT_COMMAND,
-        hint: "Executable Paperclip spawns (default: reclaude). Must be on the server's PATH.",
+        default: resolveDefaultCommand(),
+        hint: "Executable Paperclip spawns. Auto-resolves to the reclaude install path; override with an absolute path if needed.",
       },
       {
         key: "cwd",
