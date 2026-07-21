@@ -40,6 +40,7 @@ import {
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipWakePrompt,
+  isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
@@ -365,6 +366,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
         onProgress: (line) => onLog("stdout", line),
+        onRuntimeProgress: ctx.onRuntimeProgress,
         assets: [{
           key: "skills",
           localDir: localSkillsDir,
@@ -558,7 +560,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-  const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
+  const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+    ? ""
+    : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const prompt = joinPromptSections([
@@ -636,6 +640,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       stdin: prompt,
       onSpawn,
+      onRuntimeProgress: ctx.onRuntimeProgress,
       onLog: async (stream, chunk) => {
         if (stream !== "stdout") {
           await onLog(stream, chunk);
@@ -643,6 +648,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         await flushStdoutChunk(chunk);
       },
+      runLogTail: paperclipBridge?.runLogTail,
     });
     await flushStdoutChunk("", true);
 
