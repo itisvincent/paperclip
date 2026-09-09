@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,9 @@ const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const generalServerShardDurations = loadShardDurations(
   path.join(scriptsDir, "general-server-shard-durations.json"),
+);
+const serializedShardDurations = loadShardDurations(
+  path.join(scriptsDir, "serialized-shard-durations.json"),
 );
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
@@ -21,8 +24,10 @@ const nonServerProjects = [
   "@paperclipai/adapter-utils",
   "@paperclipai/adapter-claude-local",
   "@paperclipai/adapter-codex-local",
+  "@paperclipai/adapter-grok-local",
   "@paperclipai/adapter-openclaw-gateway",
   "@paperclipai/adapter-opencode-local",
+  "@paperclipai/plugin-daytona",
   "@paperclipai/plugin-sdk",
   "@paperclipai/create-paperclip-plugin",
   "@paperclipai/ui",
@@ -70,6 +75,7 @@ const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
 ];
+const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -251,25 +257,41 @@ function parseCliOptions(argv) {
 }
 
 function selectSerializedSuites(routeTests, shardIndex, shardCount) {
-  return routeTests.filter((_, index) => index % shardCount === shardIndex);
+  // Same duration-aware LPT partition as the general-server lane. Round-robin
+  // over the alphabetical list clustered the heavy heartbeat/issues suites on
+  // one shard (291s vs 170-201s test steps across the matrix in actions run
+  // 32012408876), which made that shard the whole PR run's slowest check.
+  const byRepoPath = new Map(routeTests.map((routeTest) => [routeTest.repoPath, routeTest]));
+  const shardFiles = selectGeneralServerShard(
+    routeTests.map((routeTest) => routeTest.repoPath),
+    shardIndex,
+    shardCount,
+    serializedShardDurations,
+  );
+  return shardFiles.map((file) => byRepoPath.get(file));
 }
 
 function runVitest(args, label) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
-  const testRoot = mkdtempSync(path.join(tempRootParent, `pcvt-${process.pid}-${invocationIndex}-`));
+  // Production workspace/security checks reject symlink aliases. In particular
+  // /tmp is /private/tmp on macOS, so fixture roots must use the canonical path.
+  const testRoot = realpathSync(mkdtempSync(path.join(tempRootParent, "pv-")));
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
   const env = {
     ...process.env,
     NODE_ENV: "test",
     PAPERCLIP_HOME: path.join(testRoot, "h"),
+    // Config discovery otherwise prefers the checkout's .paperclip/config.json
+    // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.
+    PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
+  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",

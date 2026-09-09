@@ -12,6 +12,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
 
 const apiPrefixes: Record<string, string> = {
+  "pipelines.ts": "/api",
+  "cases.ts": "/api",
+  "smoke-lab.ts": "/api",
   "access.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
@@ -26,6 +29,7 @@ const apiPrefixes: Record<string, string> = {
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
+  "connection-intents.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "decision-queues.ts": "/api",
@@ -44,12 +48,14 @@ const apiPrefixes: Record<string, string> = {
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
+  "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
   "resource-memberships.ts": "/api",
+  "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
@@ -65,14 +71,13 @@ const apiPrefixes: Record<string, string> = {
 const ROUTE_LITERAL_PATTERN = /router\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
 const ROUTER_METHOD_PATTERN = /router\.(get|post|put|patch|delete)\(/;
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
-const explicitOpenApiCoverageExclusions = new Set([
-  // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
-  "pipelines.ts",
-  // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
-  "cases.ts",
-  // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
-  "smoke-lab.ts",
-]);
+const explicitOpenApiCoverageExclusions = new Set<string>();
+
+// The set of contract-first routes whose OpenAPI document leads the mounted
+// request handler. The company-and-environment Claude setup-token login routes
+// now have request handlers, so the set is empty. A new contract-first route
+// belongs here only until its handler lands.
+const specOnlyContractFirstRoutes = new Set<string>([]);
 
 function createApp() {
   const app = express();
@@ -100,6 +105,12 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
+    return routePath;
+  }
+  if (
+    file === "connection-intents.ts"
+    && (routePath.startsWith("/mcp/") || routePath.startsWith("/runtime-tools/"))
+  ) {
     return routePath;
   }
   if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
@@ -179,6 +190,14 @@ describe("openapi routes", () => {
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
     expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
     expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
+    expect(res.body.paths["/api/companies"].get.parameters).toContainEqual({
+      name: "scope",
+      in: "query",
+      required: false,
+      schema: { type: "string", enum: ["accessible"] },
+    });
+    expect(res.body.paths["/api/companies"].get.responses["403"]).toBeDefined();
+    expect(res.body.paths["/api/companies"].get.responses["400"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
@@ -205,8 +224,27 @@ describe("openapi routes", () => {
     });
     expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
     expect(
+      Object.keys(
+        res.body.paths["/api/issues/{id}/work-products/{workProductId}/review-document"].post.responses,
+      ).sort(),
+    ).toEqual(["200", "201", "401", "403", "404", "409", "413", "415", "422"]);
+    expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,
     ).toBe("Withdraw a pending issue thread interaction");
+    const createInteraction = res.body.paths["/api/issues/{id}/interactions"].post;
+    expect(createInteraction.description).toContain("defaults to canonical `anyone`");
+    const createInteractionSchema = JSON.stringify(
+      createInteraction.requestBody.content["application/json"].schema,
+    );
+    for (const resolverPolicy of [
+      "anyone",
+      "not_creator",
+      "human_only",
+      "board_or_agents",
+      "board_only",
+    ]) {
+      expect(createInteractionSchema).toContain(`\"${resolverPolicy}\"`);
+    }
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
       "Move an item into or out of a folder",
     );
@@ -239,7 +277,9 @@ describe("openapi routes", () => {
     const { routes: specRoutes } = loadSpecRoutes();
 
     const missingInSpec = [...actualRoutes].filter((route) => !specRoutes.has(route)).sort();
-    const extraInSpec = [...specRoutes].filter((route) => !actualRoutes.has(route)).sort();
+    const extraInSpec = [...specRoutes]
+      .filter((route) => !actualRoutes.has(route) && !specOnlyContractFirstRoutes.has(route))
+      .sort();
 
     expect({ unknownRouteFiles, missingInSpec, extraInSpec }).toEqual({
       unknownRouteFiles: [],
@@ -248,10 +288,23 @@ describe("openapi routes", () => {
     });
   });
 
+  it("documents board-only repository discovery and selection", () => {
+    const { spec } = loadSpecRoutes();
+    const discovery = spec.paths["/api/companies/{companyId}/project-repositories"].get;
+    const replacement = spec.paths["/api/projects/{id}/repositories"].put;
+    for (const operation of [discovery, replacement]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    expect(replacement.requestBody.content["application/json"].schema.required).toContain("repositoryIds");
+    expect(replacement.responses["422"]).toBeDefined();
+  });
+
   it("documents auth and reviewed response-code invariants", () => {
     const { spec } = loadSpecRoutes();
 
     expect(spec.paths["/api/openapi.json"].get.security).toEqual([]);
+    expect(spec.paths["/runtime-tools/github/credentials"].post.security).toEqual([{ RuntimeToolsBearerAuth: [] }]);
     expect(spec.paths["/api/plugins/install"].post.security).toEqual([
       { BoardSessionAuth: [] },
       { BoardApiKeyAuth: [] },
@@ -269,9 +322,97 @@ describe("openapi routes", () => {
     });
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();
+    expect(spec.paths["/api/companies/{companyId}/managed-agent-profiles"].post.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(spec.paths["/api/companies/{companyId}/remote-agent-profiles"].get.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    const remoteAgentProfileBody =
+      spec.paths["/api/companies/{companyId}/remote-agent-profiles"].post.requestBody.content[
+        "application/json"
+      ].schema;
+    expect(remoteAgentProfileBody.properties.service).toMatchObject({
+      type: "string",
+      enum: ["aws_bedrock_agentcore_harness"],
+    });
+    expect(remoteAgentProfileBody.properties.credentialSecretId).toBeUndefined();
     expect(spec.paths["/api/instance/database-backups"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/invites/{token}/accept"].post.responses["202"]).toBeDefined();
     expect(spec.paths["/api/board-api-keys"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/import"].post.responses["202"]).toBeDefined();
+    expect(spec.paths["/api/routines/{id}/run"].post.responses["422"]).toBeDefined();
+  });
+
+  it("publishes the Claude browser-code grammar and strict setup-token response shapes", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/setup-token-login-sessions";
+
+    // The submitted browser code carries the bounded printable-ASCII grammar.
+    const codeBody =
+      spec.paths[`${base}/{sessionId}/code`].post.requestBody.content["application/json"].schema;
+    const browserCode = codeBody.properties.browserCode;
+    expect(browserCode.minLength).toBe(1);
+    expect(browserCode.maxLength).toBe(512);
+    expect(typeof browserCode.pattern).toBe("string");
+    expect(browserCode.pattern.length).toBeGreaterThan(0);
+
+    // Every Claude request object forbids an unknown property.
+    const startBody =
+      spec.paths[base].post.requestBody.content["application/json"].schema;
+    expect(startBody.additionalProperties).toBe(false);
+    expect(codeBody.additionalProperties).toBe(false);
+
+    // The four contract-first routes carry typed strict response schemas.
+    const responseSchemas: Record<string, Record<string, unknown>> = {
+      start: spec.paths[base].post.responses["201"].content["application/json"].schema,
+      status: spec.paths[`${base}/{sessionId}`].get.responses["200"].content["application/json"].schema,
+      prompt: spec.paths[`${base}/{sessionId}/prompt`].get.responses["200"].content["application/json"].schema,
+      code: spec.paths[`${base}/{sessionId}/code`].post.responses["200"].content["application/json"].schema,
+    };
+    const forbiddenProperties = ["token", "accountId", "leaseId"];
+    for (const [name, schema] of Object.entries(responseSchemas)) {
+      expect(schema.type, `${name} response is a typed object`).toBe("object");
+      expect(schema.additionalProperties, `${name} response is strict`).toBe(false);
+      const properties = (schema.properties ?? {}) as Record<string, unknown>;
+      expect(Object.keys(properties).length, `${name} response lists properties`).toBeGreaterThan(0);
+      for (const forbidden of forbiddenProperties) {
+        expect(properties[forbidden], `${name} response hides ${forbidden}`).toBeUndefined();
+      }
+      // No property name looks like a raw prompt secret or a token.
+      for (const property of Object.keys(properties)) {
+        expect(/token|secret|accountId|leaseId/i.test(property), `${name}.${property} is not secret-adjacent`).toBe(
+          false,
+        );
+      }
+    }
+
+    // The status and code routes share the public response; it hides the prompt.
+    expect(responseSchemas.status.properties).toEqual(responseSchemas.code.properties);
+    expect((responseSchemas.status.properties as Record<string, unknown>).prompt).toBeUndefined();
+    // The owner start response adds the panel mode and the one-time prompt.
+    expect((responseSchemas.start.properties as Record<string, unknown>).panelMode).toBeDefined();
+    expect((responseSchemas.start.properties as Record<string, unknown>).prompt).toBeDefined();
+    // The prompt route returns the authorization URL and the optional transport
+    // advisory. The advisory is present on a non-confidential transport, so the
+    // client can show a non-blocking disclaimer.
+    expect(Object.keys(responseSchemas.prompt.properties as Record<string, unknown>)).toEqual([
+      "authorizationUrl",
+      "transportAdvisory",
+    ]);
+  });
+
+  it("documents the 404 non-member gate on the Claude setup-token cancel route", () => {
+    const { spec } = loadSpecRoutes();
+    const cancel =
+      spec.paths["/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel"].post;
+    // The 404 is reachable at run time. The company-access gate returns a fixed
+    // 404 for a non-member before the cancel logic runs, so the spec declares
+    // it. The idempotent cancel still returns 200 for an owner-scoped missing,
+    // terminal, or foreign session id.
+    const codes = Object.keys(cancel.responses).sort();
+    expect(codes).toEqual(["200", "401", "403", "404"]);
   });
 });

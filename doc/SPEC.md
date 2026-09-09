@@ -29,6 +29,11 @@ Every Company has a **Board** that governs high-impact decisions. The Board is t
 - CEO's initial strategic breakdown (CEO proposes, Board approves before execution begins)
 - [TBD: other governance-gated actions — goal changes, firing Agents?]
 
+Connection tool reviews also appear in task history, with a composer takeover for
+human approval, decline, or scoped remembered permission. Connections and task
+views resolve the same review, and the agent continues with the server-recorded
+outcome. See [the implementation contract](SPEC-implementation.md#124-connection-tool-reviews).
+
 #### Board Powers (Always Available)
 
 The Board has **unrestricted access** to the entire system at all times:
@@ -424,6 +429,7 @@ Paperclip manages task-linked work artifacts: issue documents (rich-text plans, 
 When an agent crashes or disappears mid-task, Paperclip does **not** auto-reassign or auto-release the task. Instead:
 
 - Paperclip surfaces stale tasks (tasks in `in_progress` with no recent activity) through dashboards and reporting
+- Paperclip may perform bounded continuity repair with the same assigned agent; when that is exhausted or unsafe, it opens a board-owned recovery action without waking a substitute agent
 - Paperclip does not fail silently — the auditing and visibility tools make problems obvious
 - Recovery is handled by humans or by emergent processes (e.g. a project manager agent whose job is to monitor for stale work and surface it)
 
